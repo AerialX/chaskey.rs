@@ -1,0 +1,4 @@
+[submodule "chaskey"]
+	path = chaskey
+	url = https://github.com/AerialX/chaskey.git
+	branch = master

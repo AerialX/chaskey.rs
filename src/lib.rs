@@ -1,24 +1,116 @@
 #![no_std]
 
-use core::mem::MaybeUninit;
+use core::fmt;
 
-pub mod sys {
-    #[derive(Debug, Copy, Clone)]
-    #[repr(C)]
-    pub struct ChaskeyContext {
-        tag: [u32; 4], // union [u8;16]
-        k1: [u32; 4],
-        k2: [u32; 4],
-        len: usize,
-        m: [u32; 4], // union [u8; 16]
+const TAG_SIZE: usize = 0x10;
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+union TagData {
+    u8_: [u8; TAG_SIZE],
+    u32_: [u32; 4],
+}
+
+impl fmt::Debug for TagData {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self.ref_u32(), f)
+    }
+}
+
+#[allow(dead_code)]
+impl TagData {
+    #[inline]
+    pub const fn new_u32(u32_: [u32; 4]) -> Self {
+        Self {
+            u32_,
+        }
     }
 
+    #[inline]
+    pub const fn new_u8(u8_: [u8; TAG_SIZE]) -> Self {
+        Self {
+            u8_,
+        }
+    }
+
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            u32_: [0; 4],
+        }
+    }
+
+    #[inline]
+    pub fn ref_u8(&self) -> &[u8; TAG_SIZE] {
+        unsafe {
+            &self.u8_
+        }
+    }
+
+    #[inline]
+    pub fn mut_u8(&mut self) -> &mut [u8; TAG_SIZE] {
+        unsafe {
+            &mut self.u8_
+        }
+    }
+
+    #[inline]
+    pub fn ref_u32(&self) -> &[u32; 4] {
+        unsafe {
+            &self.u32_
+        }
+    }
+
+    #[inline]
+    pub fn mut_u32(&mut self) -> &mut [u32; 4] {
+        unsafe {
+            &mut self.u32_
+        }
+    }
+}
+
+impl Default for TagData {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<[u32; 4]> for TagData {
+    #[inline]
+    fn from(data: [u32; 4]) -> Self {
+        Self::new_u32(data)
+    }
+}
+
+impl From<[u8; TAG_SIZE]> for TagData {
+    #[inline]
+    fn from(data: [u8; TAG_SIZE]) -> Self {
+        Self::new_u8(data)
+    }
+}
+
+pub mod sys {
+    use super::TagData;
+
+    #[derive(Debug, Copy, Clone)]
+    #[cfg_attr(feature = "ffi", repr(C))]
+    pub struct ChaskeyContext {
+        pub(crate) tag: TagData,
+        pub(crate) k1: [u32; 4],
+        pub(crate) k2: [u32; 4],
+        pub(crate) len: usize,
+        pub(crate) m: TagData,
+    }
+
+    #[cfg(feature = "ffi")]
     extern "C" {
         pub fn chaskey_subkeys(k1: *mut [u32; 4], k2: *mut [u32; 4], k: &[u32; 4]);
         pub fn chaskey_init(context: *mut ChaskeyContext, k: &[u32; 4], k1: &[u32; 4], k2: &[u32; 4]);
         pub fn chaskey_process(context: &mut ChaskeyContext, m: *const u8, len: usize);
         pub fn chaskey_finish(context: &mut ChaskeyContext);
-        pub fn chaskey_tag(context: &ChaskeyContext) -> &[u8; 16];
+        pub fn chaskey_tag(context: &ChaskeyContext) -> &[u8; super::TAG_SIZE];
     }
 }
 
@@ -30,24 +122,29 @@ pub struct Context {
 
 impl Context {
     #[inline]
-    pub fn new(k: &[u32; 4], k1: &[u32; 4], k2: &[u32; 4]) -> Self {
-        let mut context = MaybeUninit::uninit();
-        unsafe {
-            sys::chaskey_init(context.as_mut_ptr() as *mut _, k, k1, k2);
-            context.assume_init()
+    pub const fn new(k: &[u32; 4], k1: &[u32; 4], k2: &[u32; 4]) -> Self {
+        Self {
+            context: sys::ChaskeyContext {
+                tag: TagData::new_u32(*k),
+                k1: *k1,
+                k2: *k2,
+                len: 0,
+                m: TagData::new(),
+            },
         }
     }
 
     #[inline]
-    pub fn from_subkeys(k: &[u32; 4], subkeys: &Subkeys) -> Self {
+    pub const fn from_subkeys(k: &[u32; 4], subkeys: &Subkeys) -> Self {
         Self::new(k, &subkeys.k1, &subkeys.k2)
     }
 
-    pub fn from_key(k: &[u32; 4]) -> Self {
+    pub const fn from_key(k: &[u32; 4]) -> Self {
         Self::from_subkeys(k, &Subkeys::new(k))
     }
 
     #[inline]
+    #[cfg(feature = "ffi")]
     pub fn process(&mut self, m: &[u8]) {
         unsafe {
             sys::chaskey_process(&mut self.context, m.as_ptr(), m.len())
@@ -55,6 +152,7 @@ impl Context {
     }
 
     #[inline]
+    #[cfg(feature = "ffi")]
     pub fn commit(&mut self) {
         unsafe {
             sys::chaskey_finish(&mut self.context)
@@ -62,11 +160,106 @@ impl Context {
     }
 
     #[inline]
-    pub fn tag(&self) -> &[u8; 16] {
-        unsafe {
-            sys::chaskey_tag(&self.context)
+    pub fn tag(&self) -> &[u8; TAG_SIZE] {
+        self.context.tag.ref_u8()
+    }
+
+    const fn timestwo(input: &[u32; 4]) -> [u32; 4] {
+        const C: [u32; 2] = [0x00, 0x87];
+
+        [
+            (input[0] << 1) ^ C[(input[3] >> 31) as usize],
+            (input[1] << 1) | (input[0] >> 31),
+            (input[2] << 1) | (input[1] >> 31),
+            (input[3] << 1) | (input[2] >> 31),
+        ]
+    }
+
+    #[cfg(not(feature = "ffi"))]
+    const fn rotl(x: u32, b: usize) -> u32 {
+        return ((x >> (32 - b)) | (x << b)) as u32;
+    }
+
+    #[cfg(not(feature = "ffi"))]
+    fn permute(v: &mut [u32; 4]) {
+        for _ in 0..Self::ROUNDS {
+            v[0] = v[0].wrapping_add(v[1]);
+            v[1] = Self::rotl(v[1], 5);
+            v[1] ^= v[0];
+            v[0] = Self::rotl(v[0], 16);
+
+            v[2] = v[2].wrapping_add(v[3]);
+            v[3] = Self::rotl(v[3], 8);
+            v[3] ^= v[2];
+
+            v[0] = v[0].wrapping_add(v[3]);
+            v[3] = Self::rotl(v[3], 13);
+            v[3] ^= v[0];
+
+            v[2] = v[2].wrapping_add(v[1]);
+            v[1] = Self::rotl(v[1], 7);
+            v[1] ^= v[2];
+            v[2] = Self::rotl(v[2], 16);
         }
     }
+
+    #[cfg(not(feature = "ffi"))]
+    fn mix(tag: &mut [u32; 4], l: &[u32; 4]) {
+        for (l, tag) in l.iter().zip(tag.iter_mut()) {
+            *tag ^= l;
+        }
+  }
+
+    #[cfg(not(feature = "ffi"))]
+    pub fn process(&mut self, mut m: &[u8]) {
+        let mut i = self.context.len & (TAG_SIZE - 1);
+        while m.len() > 0 {
+            if i == 0 && self.context.len > 0 {
+                Self::permute(self.context.tag.mut_u32());
+            }
+
+            let blocklen = core::cmp::min(m.len(), TAG_SIZE - i);
+            self.context.m.mut_u8()[i..].copy_from_slice(&m[..blocklen]);
+            self.context.len += blocklen;
+            m = &m[blocklen..];
+
+            if i + blocklen == TAG_SIZE {
+                // TODO: bswap m.mut_u32()
+                Self::mix(self.context.tag.mut_u32(), self.context.m.ref_u32());
+            }
+            i = 0;
+        }
+    }
+
+    #[cfg(not(feature = "ffi"))]
+    pub fn commit(&mut self) {
+        let i = self.context.len & (TAG_SIZE - 1);
+        let l = if self.context.len != 0 && i == 0 {
+            &self.context.k1
+        } else {
+            self.context.m.mut_u8()[i] = 0x01; // padding bit
+            for m in &mut self.context.m.mut_u8()[i + 1..] {
+                *m = 0;
+            }
+
+            // TODO: bswap m.mut_u32()
+            Self::mix(self.context.tag.mut_u32(), self.context.m.ref_u32());
+            &self.context.k2
+        };
+
+        Self::mix(self.context.tag.mut_u32(), l);
+
+        Self::permute(self.context.tag.mut_u32());
+
+        Self::mix(self.context.tag.mut_u32(), l);
+        // TODO: bswap self.tag_u32()
+    }
+
+    #[cfg(chaskey_rounds = "8")]
+    pub const ROUNDS: usize = 8;
+
+    #[cfg(chaskey_rounds = "12")]
+    pub const ROUNDS: usize = 12;
 }
 
 impl core::hash::Hasher for Context {
@@ -83,6 +276,12 @@ impl core::hash::Hasher for Context {
     }
 }
 
+/*pub trait Tag {
+    fn as_u32(&self) -> &[u32; 4];
+    fn as_u8(&self) -> &[u8; 16];
+    fn as_u128(&self) -> &u128;
+}*/
+
 #[derive(Debug, Copy, Clone)]
 pub struct Subkeys {
     pub k1: [u32; 4],
@@ -91,22 +290,11 @@ pub struct Subkeys {
 
 impl Subkeys {
     #[inline]
-    pub fn new(k: &[u32; 4]) -> Subkeys {
-        let mut k1 = MaybeUninit::uninit();
-        let mut k2 = MaybeUninit::uninit();
-        unsafe {
-            sys::chaskey_subkeys(k1.as_mut_ptr(), k2.as_mut_ptr(), k);
-            Subkeys {
-                k1: k1.assume_init(),
-                k2: k2.assume_init(),
-            }
-        }
-    }
-
-    #[inline]
-    pub fn in_place(k1: &mut [u32; 4], k2: &mut [u32; 4], k: &[u32; 4]) {
-        unsafe {
-            sys::chaskey_subkeys(k1, k2, k)
+    pub const fn new(k: &[u32; 4]) -> Subkeys {
+        let k1 = Context::timestwo(&k);
+        Subkeys {
+            k2: Context::timestwo(&k1),
+            k1,
         }
     }
 }

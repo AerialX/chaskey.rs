@@ -1,6 +1,7 @@
 #![no_std]
 
 use core::fmt;
+use unchecked_ops::*;
 
 const TAG_SIZE: usize = 0x10;
 
@@ -122,12 +123,12 @@ pub struct Context {
 
 impl Context {
     #[inline]
-    pub const fn new(k: &[u32; 4], k1: &[u32; 4], k2: &[u32; 4]) -> Self {
+    pub const fn new(k: [u32; 4], k1: [u32; 4], k2: [u32; 4]) -> Self {
         Self {
             context: sys::ChaskeyContext {
-                tag: TagData::new_u32(*k),
-                k1: *k1,
-                k2: *k2,
+                tag: TagData::new_u32(k),
+                k1,
+                k2,
                 len: 0,
                 m: TagData::new(),
             },
@@ -135,12 +136,13 @@ impl Context {
     }
 
     #[inline]
-    pub const fn from_subkeys(k: &[u32; 4], subkeys: &Subkeys) -> Self {
-        Self::new(k, &subkeys.k1, &subkeys.k2)
+    pub const fn from_subkeys(k: [u32; 4], subkeys: Subkeys) -> Self {
+        Self::new(k, subkeys.k1, subkeys.k2)
     }
 
-    pub const fn from_key(k: &[u32; 4]) -> Self {
-        Self::from_subkeys(k, &Subkeys::new(k))
+    pub const fn from_key(k: [u32; 4]) -> Self {
+        let subkeys = Subkeys::new(&k);
+        Self::from_subkeys(k, subkeys)
     }
 
     #[inline]
@@ -176,8 +178,12 @@ impl Context {
     }
 
     #[cfg(not(feature = "ffi"))]
-    const fn rotl(x: u32, b: usize) -> u32 {
-        return ((x >> (32 - b)) | (x << b)) as u32;
+    fn rotl(x: u32, b: u32) -> u32 {
+        unsafe {
+            let rev = 32.unchecked_sub(b);
+            let x = Unchecked::new(x);
+            ((x >> rev) | (x << b)).value()
+        }
     }
 
     #[cfg(not(feature = "ffi"))]
@@ -219,9 +225,12 @@ impl Context {
             }
 
             let blocklen = core::cmp::min(m.len(), TAG_SIZE - i);
-            self.context.m.mut_u8()[i..].copy_from_slice(&m[..blocklen]);
-            self.context.len += blocklen;
-            m = &m[blocklen..];
+            let (block, rest) = m.split_at(blocklen);
+            for (cm, &m) in self.context.m.mut_u8()[i..].iter_mut().zip(block) {
+                *cm = m;
+            }
+            self.context.len = self.context.len.wrapping_add(blocklen);
+            m = rest;
 
             if i + blocklen == TAG_SIZE {
                 // TODO: bswap m.mut_u32()
@@ -237,9 +246,11 @@ impl Context {
         let l = if self.context.len != 0 && i == 0 {
             &self.context.k1
         } else {
-            self.context.m.mut_u8()[i] = 0x01; // padding bit
-            for m in &mut self.context.m.mut_u8()[i + 1..] {
-                *m = 0;
+            unsafe {
+                *self.context.m.mut_u8().get_unchecked_mut(i) = 0x01; // padding bit
+                for m in self.context.m.mut_u8().get_unchecked_mut(i + 1..) {
+                    *m = 0;
+                }
             }
 
             // TODO: bswap m.mut_u32()

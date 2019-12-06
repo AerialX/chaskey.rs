@@ -2,15 +2,22 @@
 # It is not intended for manual editing.
 [[package]]
 name = "cc"
-version = "1.0.40"
+version = "1.0.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "chaskey"
 version = "0.1.0"
 dependencies = [
- "cc 1.0.40 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cc 1.0.48 (registry+https://github.com/rust-lang/crates.io-index)",
+ "unchecked-ops 0.1.0 (git+https://github.com/AerialX/unchecked-ops.rs)",
 ]
 
+[[package]]
+name = "unchecked-ops"
+version = "0.1.0"
+source = "git+https://github.com/AerialX/unchecked-ops.rs#d7203fba6890f4c4293b5600ce0fc6ac3785ebbd"
+
 [metadata]
-"checksum cc 1.0.40 (registry+https://github.com/rust-lang/crates.io-index)" = "b548a4ee81fccb95919d4e22cfea83c7693ebfd78f0495493178db20b3139da7"
+"checksum cc 1.0.48 (registry+https://github.com/rust-lang/crates.io-index)" = "f52a465a666ca3d838ebbf08b241383421412fe7ebb463527bba275526d89f76"
+"checksum unchecked-ops 0.1.0 (git+https://github.com/AerialX/unchecked-ops.rs)" = "<none>"

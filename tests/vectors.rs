@@ -2,7 +2,7 @@ use std::iter::FromIterator;
 
 #[test]
 fn vectors() {
-    let chaskey = chaskey::Context::from_key(&KEY);
+    let chaskey = chaskey::Context::from_key(KEY);
     let mut msg = [0u8; 64];
 
     for (i, vec) in VECTORS.iter().enumerate() {

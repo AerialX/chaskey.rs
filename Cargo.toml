@@ -5,6 +5,9 @@ authors = ["aaron"]
 edition = "2018"
 build = "build.rs"
 
+[dependencies]
+unchecked-ops = { version = "^0.1.0", git = "https://github.com/AerialX/unchecked-ops.rs" }
+
 [build-dependencies]
 cc = { version = "^1.0.40", optional = true }
 

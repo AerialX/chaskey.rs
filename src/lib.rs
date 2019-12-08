@@ -216,6 +216,17 @@ impl Context {
         }
   }
 
+    #[cfg(all(not(feature = "ffi"), target_endian = "big"))]
+    fn bswap(tag: &mut [u32; 4]) {
+        for tag in tag.iter_mut() {
+            *tag = tag.to_le();
+        }
+    }
+
+    #[inline]
+    #[cfg(all(not(feature = "ffi"), target_endian = "little"))]
+    fn bswap(_tag: &mut [u32; 4]) { }
+
     #[cfg(not(feature = "ffi"))]
     pub fn process(&mut self, mut m: &[u8]) {
         let mut i = self.context.len & (TAG_SIZE - 1);
@@ -233,7 +244,7 @@ impl Context {
             m = rest;
 
             if i + blocklen == TAG_SIZE {
-                // TODO: bswap m.mut_u32()
+                Self::bswap(self.context.m.mut_u32());
                 Self::mix(self.context.tag.mut_u32(), self.context.m.ref_u32());
             }
             i = 0;
@@ -253,7 +264,7 @@ impl Context {
                 }
             }
 
-            // TODO: bswap m.mut_u32()
+            Self::bswap(self.context.m.mut_u32());
             Self::mix(self.context.tag.mut_u32(), self.context.m.ref_u32());
             &self.context.k2
         };
@@ -263,7 +274,7 @@ impl Context {
         Self::permute(self.context.tag.mut_u32());
 
         Self::mix(self.context.tag.mut_u32(), l);
-        // TODO: bswap self.tag_u32()
+        Self::bswap(self.context.tag.mut_u32());
     }
 
     #[cfg(chaskey_rounds = "8")]

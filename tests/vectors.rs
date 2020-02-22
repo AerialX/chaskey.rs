@@ -1,8 +1,6 @@
 use std::iter::FromIterator;
 
-#[test]
-fn vectors() {
-    let chaskey = chaskey::Context::from_key(KEY);
+fn test_vectors<S: Clone + chaskey::AsSubkeys>(chaskey: chaskey::Context<S>) {
     let mut msg = [0u8; 64];
 
     for (i, vec) in VECTORS.iter().enumerate() {
@@ -17,6 +15,31 @@ fn vectors() {
         chaskey.commit();
         assert_eq!(&chaskey.tag()[..], &vec_bytes[..]);
     }
+}
+
+#[test]
+fn vectors() {
+    let chaskey = chaskey::Context::from_key(KEY);
+
+    test_vectors(chaskey);
+}
+
+#[test]
+#[cfg(not(feature = "ffi"))]
+fn vectors_ref_sub() {
+    let subkeys = chaskey::Subkeys::from_key(&KEY);
+    let chaskey = chaskey::Context::new(KEY, subkeys.to_ref());
+
+    test_vectors(chaskey);
+}
+
+#[test]
+#[cfg(not(feature = "ffi"))]
+fn vectors_ref() {
+    let subkeys = chaskey::Subkeys::from_key(&KEY);
+    let chaskey = chaskey::Context::new(KEY, &subkeys);
+
+    test_vectors(chaskey);
 }
 
 type TestVectors = [u32; 4];

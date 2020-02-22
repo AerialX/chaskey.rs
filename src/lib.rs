@@ -1,6 +1,7 @@
 #![no_std]
 
 use core::{fmt, ptr};
+#[cfg(not(feature = "ffi"))]
 use unchecked_ops::*;
 
 #[cfg(chaskey_rounds = "8")]
@@ -102,9 +103,9 @@ impl From<[u8; TAG_SIZE]> for TagData {
 
 #[cfg(feature = "ffi")]
 pub mod sys {
-    use super::{KeyData, TagData, Context};
+    use super::{KeyData, TagData, Context, Subkeys};
 
-    pub type ChaskeyContext = Context<KeyData>;
+    pub type ChaskeyContext = Context<Subkeys<KeyData>>;
 
     extern "C" {
         pub fn chaskey_subkeys(k1: *mut KeyData, k2: *mut KeyData, k: &KeyData);
@@ -117,16 +118,16 @@ pub mod sys {
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
-pub struct Context<K = KeyData> {
+pub struct Context<S = Subkeys<KeyData>> {
     tag: TagData,
-    subkeys: Subkeys<K>,
+    subkeys: S,
     len: usize,
     m: TagData,
 }
 
-impl<K> Context<K> {
+impl<S> Context<S> {
     #[inline]
-    pub const fn new(k: KeyData, subkeys: Subkeys<K>) -> Self {
+    pub const fn new(k: KeyData, subkeys: S) -> Self {
         Self {
             tag: TagData::new_u32(k),
             subkeys,
@@ -136,17 +137,19 @@ impl<K> Context<K> {
     }
 
     #[inline]
-    pub const fn from_subkeys(k: KeyData, k1: K, k2: K) -> Self {
-        Self::new(k, Subkeys::new(k1, k2))
-    }
-
-    #[inline]
     pub fn tag(&self) -> &[u8; TAG_SIZE] {
         self.tag.ref_u8()
     }
 }
 
-impl Context<KeyData> {
+impl<K> Context<Subkeys<K>> {
+    #[inline]
+    pub const fn from_subkeys(k: KeyData, k1: K, k2: K) -> Self {
+        Self::new(k, Subkeys::new(k1, k2))
+    }
+}
+
+impl Context<Subkeys<KeyData>> {
     pub const fn from_key(k: KeyData) -> Self {
         let subkeys = Subkeys::from_key(&k);
         Self::new(k, subkeys)
@@ -215,24 +218,26 @@ fn bswap(tag: &mut [u32; 4]) {
 fn bswap(_tag: &mut [u32; 4]) { }
 
 #[cfg(feature = "ffi")]
-impl Context<KeyData> {
+impl<S: AsSubkeys> Context<S> {
     #[inline]
     pub fn process(&mut self, m: &[u8]) {
         unsafe {
-            sys::chaskey_process(self, m.as_ptr(), m.len())
+            let this: &mut sys::ChaskeyContext = core::mem::transmute(self);
+            sys::chaskey_process(this, m.as_ptr(), m.len())
         }
     }
 
     #[inline]
     pub fn commit(&mut self) {
         unsafe {
-            sys::chaskey_finish(self)
+            let this: &mut sys::ChaskeyContext = core::mem::transmute(self);
+            sys::chaskey_finish(this)
         }
     }
 }
 
 #[cfg(not(feature = "ffi"))]
-impl<K> Context<K> {
+impl<S> Context<S> {
     pub fn process(&mut self, mut m: &[u8]) {
         let mut i = self.len & (TAG_SIZE - 1);
         while m.len() > 0 {
@@ -258,7 +263,7 @@ impl<K> Context<K> {
 }
 
 #[cfg(not(feature = "ffi"))]
-impl<K: AsKeyData> Context<K> {
+impl<S: AsSubkeys> Context<S> {
     pub fn commit(&mut self) {
         let i = self.len & (TAG_SIZE - 1);
         let l = if self.len != 0 && i == 0 {
@@ -285,16 +290,7 @@ impl<K: AsKeyData> Context<K> {
     }
 }
 
-#[inline]
-fn hasher_data_from_tag(tag: &[u8; TAG_SIZE]) -> u64 {
-    unsafe {
-        // TODO: TagData is actually aligned if align_of<u32>() == align_of<u64>()
-        ptr::read_unaligned(tag.as_ptr() as *const u64)
-    }
-}
-
-#[cfg(not(feature = "ffi"))]
-impl<K: Clone + AsKeyData> core::hash::Hasher for Context<K> {
+impl<S: Clone + AsSubkeys> core::hash::Hasher for Context<S> {
     #[inline]
     fn write(&mut self, buf: &[u8]) {
         self.process(buf)
@@ -303,21 +299,10 @@ impl<K: Clone + AsKeyData> core::hash::Hasher for Context<K> {
     fn finish(&self) -> u64 {
         let mut s = self.clone();
         s.commit();
-        hasher_data_from_tag(s.tag())
-    }
-}
-
-#[cfg(feature = "ffi")]
-impl core::hash::Hasher for Context<KeyData> {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) {
-        self.process(buf)
-    }
-
-    fn finish(&self) -> u64 {
-        let mut s = self.clone();
-        s.commit();
-        hasher_data_from_tag(s.tag())
+        unsafe {
+            // TODO: TagData is actually aligned if align_of<u32>() == align_of<u64>()
+            ptr::read_unaligned(self.tag().as_ptr() as *const u64)
+        }
     }
 }
 
@@ -344,15 +329,43 @@ impl<K> Subkeys<K> {
             k2,
         }
     }
+
+    #[inline]
+    pub const fn to_ref(&self) -> Subkeys<&K> {
+        Subkeys {
+            k1: &self.k1,
+            k2: &self.k2,
+        }
+    }
 }
 
-impl<K: AsKeyData> Subkeys<K> {
-    pub fn k1(&self) -> &KeyData {
+pub unsafe trait AsSubkeys {
+    fn k1(&self) -> &KeyData;
+    fn k2(&self) -> &KeyData;
+}
+
+unsafe impl<K: AsKeyData> AsSubkeys for Subkeys<K> {
+    #[inline]
+    fn k1(&self) -> &KeyData {
         self.k1.as_key_data()
     }
 
-    pub fn k2(&self) -> &KeyData {
+    #[inline]
+    fn k2(&self) -> &KeyData {
         self.k2.as_key_data()
+    }
+}
+
+#[cfg(not(feature = "ffi"))]
+unsafe impl<K: AsKeyData> AsSubkeys for &'_ Subkeys<K> {
+    #[inline]
+    fn k1(&self) -> &KeyData {
+        AsSubkeys::k1(*self)
+    }
+
+    #[inline]
+    fn k2(&self) -> &KeyData {
+        AsSubkeys::k2(*self)
     }
 }
 
@@ -362,12 +375,15 @@ pub trait AsKeyData {
 }
 
 impl AsKeyData for KeyData {
+    #[inline]
     fn as_key_data(&self) -> &KeyData {
         self
     }
 }
 
+#[cfg(not(feature = "ffi"))]
 impl AsKeyData for &'_ KeyData {
+    #[inline]
     fn as_key_data(&self) -> &KeyData {
         *self
     }
